@@ -14,16 +14,16 @@ A Java 21 / Maven utility that compares the content of database tables across tw
 
 - Java 21+
 - Maven 3.8+
-- JDBC driver for your target database (add to `pom.xml`)
 
 ## Project structure
 
 ```
 src/main/java/com/tablescomparison/
-├── Main.java                          # Entry point — configure datasources here
+├── Main.java                          # Entry point — loads config from .env
 ├── model/
+│   ├── ConfigLoader.java              # Reads .env variables into config objects
 │   ├── DataSourceConfig.java          # Connection parameters for one datasource
-│   ├── ComparisonRequest.java         # List of tables + two DataSourceConfigs
+│   ├── ComparisonRequest.java         # List of tables + two DataSourceConfigs + optional schemas
 │   ├── ColumnMetadata.java            # Column descriptor (name, type, position…)
 │   ├── DifferenceDetail.java          # A single identified difference with a category
 │   └── TableComparisonResult.java     # Sealed interface: Equal | Different | Error
@@ -36,73 +36,60 @@ src/main/java/com/tablescomparison/
 
 ## Quick start
 
-### 1. Add your JDBC driver
+### 1. Configure datasources
 
-Add the driver for your database to `pom.xml`. Examples:
+Copy `.env.template` to `.env` and fill in your credentials:
 
-```xml
-<!-- PostgreSQL -->
-<dependency>
-    <groupId>org.postgresql</groupId>
-    <artifactId>postgresql</artifactId>
-    <version>42.7.3</version>
-</dependency>
-
-<!-- MySQL -->
-<dependency>
-    <groupId>com.mysql</groupId>
-    <artifactId>mysql-connector-j</artifactId>
-    <version>9.0.0</version>
-</dependency>
-
-<!-- Oracle -->
-<dependency>
-    <groupId>com.oracle.database.jdbc</groupId>
-    <artifactId>ojdbc11</artifactId>
-    <version>23.4.0.24.05</version>
-</dependency>
+```bash
+cp .env.template .env
 ```
 
-### 2. Configure datasources
+Edit `.env`:
 
-Edit `Main.java`:
+```env
+# Source 1
+SOURCE1_NAME=AS400 / ges_mu274
+SOURCE1_JDBC_URL=jdbc:as400://host;libraries=MYLIB;naming=system
+SOURCE1_USERNAME=user
+SOURCE1_PASSWORD=password
+SOURCE1_DRIVER_CLASS=com.ibm.as400.access.AS400JDBCDriver
 
-```java
-var source1 = new DataSourceConfig(
-    "Production",
-    "jdbc:postgresql://prod-host:5432/mydb",
-    "user", "password",
-    null   // driver auto-detected from URL
-);
+# Source 2
+SOURCE2_NAME=PG / bigdata
+SOURCE2_JDBC_URL=jdbc:postgresql://host:5432/mydb?currentSchema="MYSCHEMA"
+SOURCE2_USERNAME=user
+SOURCE2_PASSWORD=password
+SOURCE2_DRIVER_CLASS=org.postgresql.Driver
 
-var source2 = new DataSourceConfig(
-    "Staging",
-    "jdbc:postgresql://staging-host:5432/mydb",
-    "user", "password",
-    null
-);
+# Table names (comma-separated)
+TABLE_NAMES=TABLE1,TABLE2,TABLE3
 
-var request = new ComparisonRequest(
-    List.of("CUSTOMERS", "ORDERS", "PRODUCTS"),
-    source1,
-    source2
-);
+# Optional: schemas to try as fallback when metadata retrieval fails (comma-separated)
+TABLE_SCHEMAS=SCHEMA1,SCHEMA2
 ```
 
-### 3. Run
+**Bundled JDBC drivers:** PostgreSQL (`postgresql 42.7.11`) and IBM AS400/iSeries (`jt400 10.4`) are already included as dependencies. For other databases, add the appropriate driver to `pom.xml`.
+
+### 2. Run
 
 ```bash
 # requires Java 21+ on PATH / JAVA_HOME
 mvn compile exec:java -Dexec.mainClass=com.tablescomparison.Main
-
-# or build a fat-jar first and run directly
-mvn package -DskipTests
-java -jar target/tables-comparison-1.0.0-SNAPSHOT.jar
 ```
 
-### 4. Use programmatically
+### 3. Use programmatically
 
 ```java
+var source1 = new DataSourceConfig("Production", "jdbc:postgresql://...", "user", "password", null);
+var source2 = new DataSourceConfig("Staging",    "jdbc:postgresql://...", "user", "password", null);
+
+var request = new ComparisonRequest(
+    List.of("CUSTOMERS", "ORDERS", "PRODUCTS"),
+    source1,
+    source2,
+    List.of()   // optional schema fallback list
+);
+
 var results = new TableComparator().compareAll(request);
 new ConsoleReporter().report(results);
 
