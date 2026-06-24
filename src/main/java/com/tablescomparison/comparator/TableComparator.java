@@ -385,56 +385,74 @@ public class TableComparator {
         log.info("Executing query for table '{}': {}", tableName, query);
 
         try (var conn1 = ds1.getConnection();
-             var conn2 = ds2.getConnection();
-             var stmt1 = conn1.createStatement();
-             var stmt2 = conn2.createStatement()) {
+             var conn2 = ds2.getConnection()) {
 
-            stmt1.setFetchSize(fetchSize);
-            stmt2.setFetchSize(fetchSize);
-            if (queryTimeoutSeconds > 0) {
-                stmt1.setQueryTimeout(queryTimeoutSeconds);
-                stmt2.setQueryTimeout(queryTimeoutSeconds);
-            }
+            // PostgreSQL JDBC ignores setFetchSize when auto-commit is on because it cannot
+            // use a server-side cursor. Disabling it enables streaming row-by-row instead of
+            // materializing the full sorted result set on the server before sending anything.
+            conn1.setAutoCommit(false);
+            conn2.setAutoCommit(false);
 
-            try (var rs1 = stmt1.executeQuery(query);
-                 var rs2 = stmt2.executeQuery(query)) {
+            try (var stmt1 = conn1.createStatement();
+                 var stmt2 = conn2.createStatement()) {
 
-                boolean has1 = rs1.next();
-                boolean has2 = rs2.next();
-                long rowPosition = 0;
-                long logStep = 1000L;
+                stmt1.setFetchSize(fetchSize);
+                stmt2.setFetchSize(fetchSize);
+                if (queryTimeoutSeconds > 0) {
+                    stmt1.setQueryTimeout(queryTimeoutSeconds);
+                    stmt2.setQueryTimeout(queryTimeoutSeconds);
+                }
 
-                while (has1 || has2) {
-                    rowPosition++;
-                    if (maxRows > 0 && rowPosition > maxRows) {
-                        log.warn("Table '{}': row scan interrupted at {} rows (COMPARE_MAX_ROWS={})",
-                                tableName, maxRows, maxRows);
-                        return RowCompareResult.interrupted(query);
-                    }
-                    if (totalCount > 0 && rowPosition % logStep == 0) {
-                        log.info("Table '{}': {}% ({}/{} rows)", tableName,
-                                rowPosition * 100 / totalCount, rowPosition, totalCount);
-                    }
-                    if (!has1) {
-                        return RowCompareResult.ok(query, List.of(new DifferenceDetail(
-                                DifferenceDetail.Category.ONLY_IN_SOURCE2,
-                                "Row #%d — %s only".formatted(rowPosition, name2))));
-                    } else if (!has2) {
-                        return RowCompareResult.ok(query, List.of(new DifferenceDetail(
-                                DifferenceDetail.Category.ONLY_IN_SOURCE1,
-                                "Row #%d — %s only".formatted(rowPosition, name1))));
-                    } else if (!keyColumns.isEmpty()) {
-                        int cmp = compareKeyColumns(rs1, rs2, keyColumns);
-                        if (cmp < 0) {
-                            return RowCompareResult.ok(query, List.of(new DifferenceDetail(
-                                    DifferenceDetail.Category.ONLY_IN_SOURCE1,
-                                    "Row #%d — %s only".formatted(rowPosition, name1))));
-                        } else if (cmp > 0) {
+                try (var rs1 = stmt1.executeQuery(query);
+                     var rs2 = stmt2.executeQuery(query)) {
+
+                    boolean has1 = rs1.next();
+                    boolean has2 = rs2.next();
+                    long rowPosition = 0;
+                    long logStep = 1000L;
+
+                    while (has1 || has2) {
+                        rowPosition++;
+                        if (maxRows > 0 && rowPosition > maxRows) {
+                            log.warn("Table '{}': row scan interrupted at {} rows (COMPARE_MAX_ROWS={})",
+                                    tableName, maxRows, maxRows);
+                            return RowCompareResult.interrupted(query);
+                        }
+                        if (totalCount > 0 && rowPosition % logStep == 0) {
+                            log.info("Table '{}': {}% ({}/{} rows)", tableName,
+                                    rowPosition * 100 / totalCount, rowPosition, totalCount);
+                        }
+                        if (!has1) {
                             return RowCompareResult.ok(query, List.of(new DifferenceDetail(
                                     DifferenceDetail.Category.ONLY_IN_SOURCE2,
                                     "Row #%d — %s only".formatted(rowPosition, name2))));
+                        } else if (!has2) {
+                            return RowCompareResult.ok(query, List.of(new DifferenceDetail(
+                                    DifferenceDetail.Category.ONLY_IN_SOURCE1,
+                                    "Row #%d — %s only".formatted(rowPosition, name1))));
+                        } else if (!keyColumns.isEmpty()) {
+                            int cmp = compareKeyColumns(rs1, rs2, keyColumns);
+                            if (cmp < 0) {
+                                return RowCompareResult.ok(query, List.of(new DifferenceDetail(
+                                        DifferenceDetail.Category.ONLY_IN_SOURCE1,
+                                        "Row #%d — %s only".formatted(rowPosition, name1))));
+                            } else if (cmp > 0) {
+                                return RowCompareResult.ok(query, List.of(new DifferenceDetail(
+                                        DifferenceDetail.Category.ONLY_IN_SOURCE2,
+                                        "Row #%d — %s only".formatted(rowPosition, name2))));
+                            } else {
+                                String mismatch = firstMismatchField(rs1, rs2, columns, keyColumns);
+                                if (mismatch != null) {
+                                    return RowCompareResult.ok(query, List.of(new DifferenceDetail(
+                                            DifferenceDetail.Category.ROW_DATA_MISMATCH,
+                                            "Row #%d%s".formatted(rowPosition, mismatch))));
+                                }
+                                has1 = rs1.next();
+                                has2 = rs2.next();
+                            }
                         } else {
-                            String mismatch = firstMismatchField(rs1, rs2, columns, keyColumns);
+                            // No unique index — positional comparison
+                            String mismatch = firstMismatchField(rs1, rs2, columns, List.of());
                             if (mismatch != null) {
                                 return RowCompareResult.ok(query, List.of(new DifferenceDetail(
                                         DifferenceDetail.Category.ROW_DATA_MISMATCH,
@@ -443,16 +461,6 @@ public class TableComparator {
                             has1 = rs1.next();
                             has2 = rs2.next();
                         }
-                    } else {
-                        // No unique index — positional comparison
-                        String mismatch = firstMismatchField(rs1, rs2, columns, List.of());
-                        if (mismatch != null) {
-                            return RowCompareResult.ok(query, List.of(new DifferenceDetail(
-                                    DifferenceDetail.Category.ROW_DATA_MISMATCH,
-                                    "Row #%d%s".formatted(rowPosition, mismatch))));
-                        }
-                        has1 = rs1.next();
-                        has2 = rs2.next();
                     }
                 }
             }
