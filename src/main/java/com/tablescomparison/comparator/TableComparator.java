@@ -433,13 +433,15 @@ public class TableComparator {
                         } else if (!keyColumns.isEmpty()) {
                             int cmp = compareKeyColumns(rs1, rs2, keyColumns);
                             if (cmp < 0) {
+                                String keys = formatKeyValues(rs1, keyColumns);
                                 return RowCompareResult.ok(query, List.of(new DifferenceDetail(
                                         DifferenceDetail.Category.ONLY_IN_SOURCE1,
-                                        "Row #%d — %s only".formatted(rowPosition, name1))));
+                                        "Row #%d — %s only (%s)".formatted(rowPosition, name1, keys))));
                             } else if (cmp > 0) {
+                                String keys = formatKeyValues(rs2, keyColumns);
                                 return RowCompareResult.ok(query, List.of(new DifferenceDetail(
                                         DifferenceDetail.Category.ONLY_IN_SOURCE2,
-                                        "Row #%d — %s only".formatted(rowPosition, name2))));
+                                        "Row #%d — %s only (%s)".formatted(rowPosition, name2, keys))));
                             } else {
                                 String mismatch = firstMismatchField(rs1, rs2, columns, keyColumns);
                                 if (mismatch != null) {
@@ -478,6 +480,16 @@ public class TableComparator {
         return columns.stream()
                 .map(col -> "\"" + col.name().toUpperCase() + "\"")
                 .collect(Collectors.joining(", "));
+    }
+
+    private String formatKeyValues(ResultSet rs, List<String> keyColumns) throws SQLException {
+        var sb = new StringBuilder("[");
+        for (int i = 0; i < keyColumns.size(); i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(keyColumns.get(i)).append('=').append(rs.getObject(keyColumns.get(i)));
+        }
+        sb.append(']');
+        return sb.toString();
     }
 
     private int compareKeyColumns(ResultSet rs1, ResultSet rs2, List<String> keyColumns)
