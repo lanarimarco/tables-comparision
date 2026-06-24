@@ -42,10 +42,11 @@ public class TableComparator {
     // DECIMAL and NUMERIC are interchangeable; compare precision and scale, not the type code
     private static final Set<Integer> NUMERIC_FAMILY = Set.of(Types.DECIMAL, Types.NUMERIC);
 
-    // All character types are interchangeable; compare length, not the type code
-    private static final Set<Integer> CHARACTER_FAMILY = Set.of(
-            Types.CHAR, Types.VARCHAR, Types.LONGVARCHAR,
-            Types.NCHAR, Types.NVARCHAR, Types.LONGNVARCHAR);
+    // Fixed-length character types are interchangeable; compare length, not the type code
+    private static final Set<Integer> FIXED_LENGTH_CHARACTER_FAMILY = Set.of(Types.CHAR, Types.NCHAR);
+    // Varying-length character types are interchangeable; compare length, not the type code
+    private static final Set<Integer> VARYING_CHARACTER_FAMILY = Set.of(
+            Types.VARCHAR, Types.LONGVARCHAR, Types.NVARCHAR, Types.LONGNVARCHAR);
 
     // -------------------------------------------------------------------------
     // Public API
@@ -280,6 +281,15 @@ public class TableComparator {
                 diffs.addAll(compareColumnType(c1, c2, name1, name2));
             }
         }
+
+        if (diffs.size() > 1) {
+            int truncated = diffs.size() - 1;
+            return List.of(
+                    diffs.getFirst(),
+                    new DifferenceDetail(
+                            diffs.getFirst().category(),
+                            "... and %d more difference(s) not shown for readability".formatted(truncated)));
+        }
         return diffs;
     }
 
@@ -287,7 +297,8 @@ public class TableComparator {
             ColumnMetadata c1, ColumnMetadata c2, String name1, String name2) {
 
         boolean bothNumeric = NUMERIC_FAMILY.contains(c1.jdbcType()) && NUMERIC_FAMILY.contains(c2.jdbcType());
-        boolean bothCharacter = CHARACTER_FAMILY.contains(c1.jdbcType()) && CHARACTER_FAMILY.contains(c2.jdbcType());
+        boolean bothCharacter = (FIXED_LENGTH_CHARACTER_FAMILY.contains(c1.jdbcType()) && FIXED_LENGTH_CHARACTER_FAMILY.contains(c2.jdbcType()))
+                || (VARYING_CHARACTER_FAMILY.contains(c1.jdbcType()) && VARYING_CHARACTER_FAMILY.contains(c2.jdbcType()));
 
         if (bothNumeric) {
             if (c1.size() != c2.size() || c1.scale() != c2.scale()) {
