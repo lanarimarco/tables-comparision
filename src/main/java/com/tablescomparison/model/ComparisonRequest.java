@@ -10,13 +10,15 @@ import java.util.List;
  * @param source2 second datasource
  * @param tableSchemas optional list of schemas to try as fallback when metadata retrieval fails
  * @param maxRows maximum rows to scan per table; 0 means no limit
+ * @param threadPoolSize number of tables compared in parallel
  */
 public record ComparisonRequest(
         List<String> tables,
         DataSourceConfig source1,
         DataSourceConfig source2,
         List<String> tableSchemas,
-        long maxRows) {
+        long maxRows,
+        int threadPoolSize) {
 
     public ComparisonRequest {
         if (tables == null || tables.isEmpty()) throw new IllegalArgumentException("tables must not be empty");
@@ -24,6 +26,7 @@ public record ComparisonRequest(
         if (source2 == null) throw new IllegalArgumentException("source2 must not be null");
         if (tableSchemas == null) throw new IllegalArgumentException("tableSchemas must not be null");
         if (maxRows < 0) throw new IllegalArgumentException("maxRows must be >= 0");
+        if (threadPoolSize < 1) throw new IllegalArgumentException("threadPoolSize must be >= 1");
         tables = List.copyOf(tables);
         tableSchemas = List.copyOf(tableSchemas);
     }

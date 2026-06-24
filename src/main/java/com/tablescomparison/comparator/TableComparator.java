@@ -21,6 +21,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 
 /**
@@ -43,8 +46,6 @@ public class TableComparator {
     private static final Set<Integer> CHARACTER_FAMILY = Set.of(
             Types.CHAR, Types.VARCHAR, Types.LONGVARCHAR,
             Types.NCHAR, Types.NVARCHAR, Types.LONGNVARCHAR);
-    private List<String> tableSchemas = List.of();
-    private long maxRows = 0L;
 
     // -------------------------------------------------------------------------
     // Public API
@@ -52,16 +53,17 @@ public class TableComparator {
 
     /**
      * Runs the comparison for every table in the request and returns one result per table.
+     * Tables are compared in parallel using a fixed thread pool sized by {@code request.threadPoolSize()}.
      * DataSources are created from the supplied configs and closed when done.
      */
     public List<TableComparisonResult> compareAll(ComparisonRequest request) {
-        try (var ds1 = createDataSource(request.source1());
-             var ds2 = createDataSource(request.source2())) {
-            this.maxRows = request.maxRows();
-            return compareAll(
+        int poolSize = request.threadPoolSize();
+        try (var ds1 = createDataSource(request.source1(), poolSize);
+             var ds2 = createDataSource(request.source2(), poolSize)) {
+            return runParallel(
                     request.tables(), ds1, ds2,
                     request.source1().name(), request.source2().name(),
-                    request.tableSchemas());
+                    request.tableSchemas(), request.maxRows(), poolSize);
         }
     }
 
@@ -81,10 +83,33 @@ public class TableComparator {
     public List<TableComparisonResult> compareAll(
             List<String> tables, DataSource ds1, DataSource ds2,
             String name1, String name2, List<String> tableSchemas) {
-        this.tableSchemas = tableSchemas;
-        return tables.stream()
-                .map(table -> compare(table, ds1, ds2, name1, name2))
-                .toList();
+        return runParallel(tables, ds1, ds2, name1, name2, tableSchemas, 0L, 1);
+    }
+
+    private List<TableComparisonResult> runParallel(
+            List<String> tables, DataSource ds1, DataSource ds2,
+            String name1, String name2, List<String> tableSchemas, long maxRows, int threadPoolSize) {
+
+        var executor = Executors.newFixedThreadPool(threadPoolSize);
+        var futures = new ArrayList<Future<TableComparisonResult>>(tables.size());
+        for (String table : tables) {
+            futures.add(executor.submit(
+                    () -> compare(table, ds1, ds2, name1, name2, tableSchemas, maxRows)));
+        }
+        executor.shutdown();
+
+        var results = new ArrayList<TableComparisonResult>(tables.size());
+        for (var future : futures) {
+            try {
+                results.add(future.get());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Table comparison interrupted", e);
+            } catch (ExecutionException e) {
+                throw new RuntimeException("Table comparison failed", e.getCause());
+            }
+        }
+        return results;
     }
 
     // -------------------------------------------------------------------------
@@ -93,8 +118,11 @@ public class TableComparator {
 
     private TableComparisonResult compare(
             String tableName, DataSource ds1, DataSource ds2,
-            String name1, String name2) {
+            String name1, String name2, List<String> tableSchemas, long maxRows) {
 
+        var thread = Thread.currentThread();
+        var previousName = thread.getName();
+        thread.setName("compare-" + tableName);
         log.info("Comparing table '{}' between '{}' and '{}'", tableName, name1, name2);
         try {
             var diffs = new ArrayList<DifferenceDetail>();
@@ -103,7 +131,7 @@ public class TableComparator {
             log.info("[STEP 1/3] Comparing record counts for table '{}'", tableName);
             long count1 = getRecordCount(tableName, ds1);
             long count2 = getRecordCount(tableName, ds2);
-            log.debug("Record counts for table '{}': {} = {}, {} = {}", tableName, name1, count1, name2, count2);
+            log.info("Record counts for table '{}': {} = {}, {} = {}", tableName, name1, count1, name2, count2);
             if (count1 != count2) {
                 log.warn("Record count mismatch for table '{}': {} = {}, {} = {}", tableName, name1, count1, name2, count2);
                 diffs.add(new DifferenceDetail(
@@ -114,8 +142,8 @@ public class TableComparator {
 
             // Step 2 — metadata
             log.info("[STEP 2/3] Comparing metadata for table '{}'", tableName);
-            var cols1 = getColumnMetadata(tableName, ds1);
-            var cols2 = getColumnMetadata(tableName, ds2);
+            var cols1 = getColumnMetadata(tableName, ds1, tableSchemas);
+            var cols2 = getColumnMetadata(tableName, ds2, tableSchemas);
             log.debug("Metadata retrieved for table '{}': {} columns in {}, {} columns in {}",
                     tableName, cols1.size(), name1, cols2.size(), name2);
             var metaDiffs = compareMetadata(cols1, cols2, name1, name2);
@@ -129,7 +157,7 @@ public class TableComparator {
 
             // Step 3 — row data
             log.info("[STEP 3/3] Comparing row data for table '{}'", tableName);
-            var primaryKeys = getPrimaryKeys(tableName, ds1);
+            var primaryKeys = getPrimaryKeys(tableName, ds1, tableSchemas);
             log.debug("Table '{}': {} primary key column(s): {}", tableName, primaryKeys.size(), primaryKeys);
             var rowResult = compareRecords(tableName, ds1, ds2, primaryKeys, cols1, name1, name2, count1, maxRows);
 
@@ -146,6 +174,8 @@ public class TableComparator {
         } catch (Exception e) {
             log.error("Error comparing table '{}': {}", tableName, e.getMessage(), e);
             return new TableComparisonResult.Error(tableName, e.getMessage(), e);
+        } finally {
+            thread.setName(previousName);
         }
     }
 
@@ -166,7 +196,8 @@ public class TableComparator {
     // Step 2 — metadata
     // -------------------------------------------------------------------------
 
-    private List<ColumnMetadata> getColumnMetadata(String tableName, DataSource ds) throws SQLException {
+    private List<ColumnMetadata> getColumnMetadata(String tableName, DataSource ds, List<String> tableSchemas)
+            throws SQLException {
         try (var conn = ds.getConnection()) {
             var dbMeta = conn.getMetaData();
             var cols = new ArrayList<ColumnMetadata>();
@@ -292,7 +323,8 @@ public class TableComparator {
     // Step 3 — row data
     // -------------------------------------------------------------------------
 
-    private List<String> getPrimaryKeys(String tableName, DataSource ds) throws SQLException {
+    private List<String> getPrimaryKeys(String tableName, DataSource ds, List<String> tableSchemas)
+            throws SQLException {
         try (var conn = ds.getConnection()) {
             var dbMeta = conn.getMetaData();
             var pks = readPrimaryKeys(dbMeta, tableName, null);
@@ -469,7 +501,7 @@ public class TableComparator {
         return v1.toString().compareTo(v2.toString());
     }
 
-    private HikariDataSource createDataSource(DataSourceConfig config) {
+    private HikariDataSource createDataSource(DataSourceConfig config, int threadPoolSize) {
         var hc = new HikariConfig();
         hc.setJdbcUrl(config.jdbcUrl());
         hc.setUsername(config.username());
@@ -477,17 +509,16 @@ public class TableComparator {
         if (config.driverClassName() != null && !config.driverClassName().isBlank()) {
             hc.setDriverClassName(config.driverClassName());
         }
-        
-        // Set connection test query based on driver type
+
         // AS400 driver doesn't implement isValid(), so we need a test query
         if (config.driverClassName() != null && config.driverClassName().contains("as400")) {
             hc.setConnectionTestQuery("VALUES 1");
         } else {
-            // For other databases, use SELECT 1
             hc.setConnectionTestQuery("SELECT 1");
         }
-        
-        hc.setMaximumPoolSize(2);
+
+        // Each thread needs at most one connection per datasource at a time
+        hc.setMaximumPoolSize(threadPoolSize);
         hc.setConnectionTimeout(30_000);
         return new HikariDataSource(hc);
     }

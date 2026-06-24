@@ -17,7 +17,8 @@ public class Main {
         var tableSchemas = ConfigLoader.loadTableSchemas();
 
         var maxRows = ConfigLoader.loadMaxRows();
-        var request = new ComparisonRequest(tableNames, source1, source2, tableSchemas, maxRows);
+        var threadPoolSize = ConfigLoader.loadThreadPoolSize();
+        var request = new ComparisonRequest(tableNames, source1, source2, tableSchemas, maxRows, threadPoolSize);
 
         var results = new TableComparator().compareAll(request);
         new ConsoleReporter().report(results);

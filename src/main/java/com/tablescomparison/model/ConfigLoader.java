@@ -72,6 +72,14 @@ public class ConfigLoader {
         return parsed;
     }
 
+    public static int loadThreadPoolSize() {
+        String value = dotenv.get("COMPARE_THREAD_POOL_SIZE");
+        if (value == null || value.isBlank()) return 5;
+        int parsed = Integer.parseInt(value.trim());
+        if (parsed < 1) throw new IllegalArgumentException("COMPARE_THREAD_POOL_SIZE must be >= 1");
+        return parsed;
+    }
+
     private static String getEnv(String key) {
         String value = dotenv.get(key);
         if (value == null || value.isBlank()) {
