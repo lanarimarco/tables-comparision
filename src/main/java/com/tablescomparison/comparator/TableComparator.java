@@ -165,7 +165,7 @@ public class TableComparator {
             var rowResult = compareRecords(tableName, ds1, ds2, keyColumns, cols1, name1, name2, count1, maxRows, fetchSize, queryTimeoutSeconds);
 
             if (rowResult.interrupted()) {
-                return new TableComparisonResult.Interrupted(tableName, maxRows, maxRows, rowResult.query());
+                return new TableComparisonResult.Interrupted(tableName, maxRows, count1, rowResult.query());
             } else if (!rowResult.diffs().isEmpty()) {
                 log.warn("Row data differences found for table '{}': {} difference(s)", tableName, rowResult.diffs().size());
                 return new TableComparisonResult.Different(tableName, rowResult.diffs(), rowResult.query());

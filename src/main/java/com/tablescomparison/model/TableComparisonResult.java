@@ -35,7 +35,7 @@ public sealed interface TableComparisonResult
     }
 
     /** Row scan was stopped at COMPARE_MAX_ROWS; no difference found within the scanned rows. */
-    record Interrupted(String tableName, long rowsScanned, long maxRows, String rowQuery)
+    record Interrupted(String tableName, long rowsScanned, long totalRowCount, String rowQuery)
             implements TableComparisonResult {}
 
     /** The comparison could not be completed due to an exception. */

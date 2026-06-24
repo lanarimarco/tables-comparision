@@ -47,7 +47,7 @@ public class ConsoleReporter implements ComparisonReporter {
                 }
                 case TableComparisonResult.Interrupted i -> {
                     out.println("  Table  : " + i.tableName());
-                    out.println("  Status : ⚡ INTERRUPTED (scanned %,d/%,d rows)".formatted(i.rowsScanned(), i.maxRows()));
+                    out.println("  Status : ⚡ INTERRUPTED (scanned %,d/%,d rows)".formatted(i.rowsScanned(), i.totalRowCount()));
                     out.println("  Select : " + i.rowQuery());
                 }
                 case TableComparisonResult.Error err -> {
