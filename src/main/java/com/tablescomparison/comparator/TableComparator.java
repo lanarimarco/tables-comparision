@@ -405,7 +405,7 @@ public class TableComparator {
                     totalCount, maxRows, fetchSize, queryTimeoutSeconds, query);
         }
         return comparePositional(tableName, ds1, ds2, columns, name1, name2,
-                maxRows, fetchSize, queryTimeoutSeconds, query);
+                totalCount, maxRows, fetchSize, queryTimeoutSeconds, query);
     }
 
     private RowCompareResult compareByKey(
@@ -433,6 +433,11 @@ public class TableComparator {
                         }
                         map1.put(normalizedKeyTuple(rs, keyColumns),
                                  new Entry(rawKeyTuple(rs, keyColumns), rowTuple(rs, columns)));
+                        long fetched = map1.size();
+                        if (totalCount > 0 && fetched % 1000 == 0) {
+                            log.info("Table '{}' [src1]: fetched {} / {} rows ({}%) — heap: {} MB", tableName,
+                                    fetched, totalCount, fetched * 100 / totalCount, heapUsedMb());
+                        }
                     }
                 }
             }
@@ -448,8 +453,8 @@ public class TableComparator {
                     while (rs.next()) {
                         rowPosition++;
                         if (totalCount > 0 && rowPosition % 1000 == 0) {
-                            log.info("Table '{}': {}% ({}/{} rows)", tableName,
-                                    rowPosition * 100 / totalCount, rowPosition, totalCount);
+                            log.info("Table '{}' [src2]: fetched {} / {} rows ({}%) — heap: {} MB", tableName,
+                                    rowPosition, totalCount, rowPosition * 100 / totalCount, heapUsedMb());
                         }
                         List<Object> normKey = normalizedKeyTuple(rs, keyColumns);
                         List<Object> dispKey = rawKeyTuple(rs, keyColumns);
@@ -487,12 +492,12 @@ public class TableComparator {
     private RowCompareResult comparePositional(
             String tableName, DataSource ds1, DataSource ds2,
             List<ColumnMetadata> columns, String name1, String name2,
-            long maxRows, int fetchSize, int queryTimeoutSeconds, String query) throws SQLException {
+            long totalCount, long maxRows, int fetchSize, int queryTimeoutSeconds, String query) throws SQLException {
 
-        var rows1 = loadAllRows(tableName, ds1, columns, maxRows, fetchSize, queryTimeoutSeconds, query);
+        var rows1 = loadAllRows(tableName, "src1", ds1, columns, totalCount, maxRows, fetchSize, queryTimeoutSeconds, query);
         if (rows1 == null) return RowCompareResult.interrupted(query);
 
-        var rows2 = loadAllRows(tableName, ds2, columns, maxRows, fetchSize, queryTimeoutSeconds, query);
+        var rows2 = loadAllRows(tableName, "src2", ds2, columns, totalCount, maxRows, fetchSize, queryTimeoutSeconds, query);
         if (rows2 == null) return RowCompareResult.interrupted(query);
 
         rows1.sort(buildRowComparator(columns.size()));
@@ -525,8 +530,8 @@ public class TableComparator {
 
     // Returns null when maxRows is exceeded (signals interruption to caller).
     private List<List<Object>> loadAllRows(
-            String tableName, DataSource ds, List<ColumnMetadata> columns,
-            long maxRows, int fetchSize, int queryTimeoutSeconds, String query) throws SQLException {
+            String tableName, String srcLabel, DataSource ds, List<ColumnMetadata> columns,
+            long totalCount, long maxRows, int fetchSize, int queryTimeoutSeconds, String query) throws SQLException {
         var rows = new ArrayList<List<Object>>();
         try (var conn = ds.getConnection()) {
             conn.setAutoCommit(false);
@@ -541,6 +546,11 @@ public class TableComparator {
                             return null;
                         }
                         rows.add(rowTuple(rs, columns));
+                        long fetched = rows.size();
+                        if (totalCount > 0 && fetched % 1000 == 0) {
+                            log.info("Table '{}' [{}]: fetched {} / {} rows ({}%) — heap: {} MB", tableName, srcLabel,
+                                    fetched, totalCount, fetched * 100 / totalCount, heapUsedMb());
+                        }
                     }
                 }
             }
@@ -656,6 +666,11 @@ public class TableComparator {
             catch (ClassCastException ignored) { /* fall through */ }
         }
         return v1.toString().compareTo(v2.toString());
+    }
+
+    private long heapUsedMb() {
+        var rt = Runtime.getRuntime();
+        return (rt.totalMemory() - rt.freeMemory()) / 1_048_576;
     }
 
     private void logConfig(ComparisonRequest req) {
